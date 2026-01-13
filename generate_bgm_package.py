@@ -20,8 +20,8 @@ from PIL import Image, ImageOps, ImageDraw, ImageFont
 # =========================
 # Defaults (user specified)
 # =========================
-DEFAULT_BGM_DIR = "/Users/higashinaigenki/bgm-autoup/bgms"
-DEFAULT_IMG_DIR = "/Users/higashinaigenki/bgm-autoup/images"
+DEFAULT_BGM_DIR = str(Path(__file__).resolve().parent / "bgms")
+DEFAULT_IMG_DIR = str(Path(__file__).resolve().parent / "images")
 
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
