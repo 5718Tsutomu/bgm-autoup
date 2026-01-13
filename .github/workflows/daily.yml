@@ -1,0 +1,51 @@
+name: Daily BGM Upload
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"  # UTC 00:00 = JST 09:00
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore YouTube credentials
+        shell: bash
+        env:
+          CLIENT_SECRET_JSON_B64: ${{ secrets.CLIENT_SECRET_JSON_B64 }}
+          YT_TOKEN_JSON_B64: ${{ secrets.YT_TOKEN_JSON_B64 }}
+        run: |
+          mkdir -p .yt_token
+          printf '%s' "$CLIENT_SECRET_JSON_B64" | base64 --decode > client_secret.json
+          printf '%s' "$YT_TOKEN_JSON_B64"      | base64 --decode > .yt_token/token.json
+          chmod 600 client_secret.json .yt_token/token.json
+
+          # “存在してて空じゃない”ことだけ確認（中身は出さない）
+          test -s client_secret.json
+          test -s .yt_token/token.json
+
+          # JSONとして読めるかチェック（中身は出さない）
+          python - <<'PY'
+          import json
+          json.load(open("client_secret.json", "r", encoding="utf-8"))
+          json.load(open(".yt_token/token.json", "r", encoding="utf-8"))
+          print("OK: credentials restored")
+          PY
+
+      - name: Run pipeline
+        run: |
+          python run_bgm_pipeline.py
