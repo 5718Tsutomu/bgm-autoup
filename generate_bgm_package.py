@@ -395,29 +395,29 @@ def make_mix_from_random_tracks(
 
     starts: List[float] = [0.0]
     for i in range(1, len(picked)):
-        prev = durations[i - 1]
-        starts.append(starts[-1] + max(0.0, prev - xfade))
-
-    current = work / "mix_000.wav"
-    run([ffmpeg_bin, "-y", "-i", str(picked[0]), "-vn", "-ar", "48000", "-ac", "2", str(current)])
-
-    for i in range(1, len(picked)):
         nxt = picked[i]
-        out_tmp = work / "mix_{:03d}.wav".format(i)
+        tmp = work / "mix_tmp.wav"
+        if tmp.exists():
+            tmp.unlink()
+
         run([
             ffmpeg_bin, "-y",
             "-i", str(current),
             "-i", str(nxt),
             "-filter_complex",
             (
-                "[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a0];"
-                "[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a1];"
-                "[a0][a1]acrossfade=d={}:c1=tri:c2=tri[a]".format(xfade)
+                "[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a0];"            "[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a1];"            "[a0][a1]acrossfade=d={}:c1=tri:c2=tri[a]".format(xfade)
             ),
             "-map", "[a]",
-            str(out_tmp)
+            str(tmp)
         ])
-        current = out_tmp
+
+        # IMPORTANT: keep only 1 intermediate WAV (GitHub Actions disk is small)
+        try:
+            current.unlink()
+        except Exception:
+            pass
+        tmp.replace(current)
 
     out_audio = out_dir / "mix.wav"
     if loudnorm:
