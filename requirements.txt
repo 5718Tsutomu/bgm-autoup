@@ -85,7 +85,7 @@ pynput==1.7.6
 pyparsing==3.2.5
 pyquaternion==0.9.9
 pyrsistent==0.19.3
-PySimpleGUI==4.60.4
+PySimpleGUI>=5.0.8.2
 PySocks==1.7.1
 python-dateutil==2.9.0.post0
 pytz==2023.3
