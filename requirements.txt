@@ -48,7 +48,6 @@ idna==3.4
 ImageIO==2.37.2
 importlib-metadata==6.7.0
 importlib_resources==6.5.2
-intrinsic @ file:///Users/higashinaigenki/Documents/Intrinsic
 itsdangerous==2.1.2
 Jinja2==3.1.2
 jiter==0.12.0
