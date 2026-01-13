@@ -108,7 +108,7 @@ jobs:
           fi
 
           echo "[INFO] bgms dir:"
-          ls -la bgms | head -n 50
+          ls -la bgms | head -n 50 || true
 
       - name: Sanity check inputs
         shell: bash
