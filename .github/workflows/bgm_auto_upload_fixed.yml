@@ -1,0 +1,143 @@
+name: BGM Auto Upload (fixed)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tools (ffmpeg, unzip, gh, fonts)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg unzip gh fonts-dejavu-core
+          ffmpeg -version
+          gh --version
+
+      - name: Install Python deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install \
+            pillow \
+            google-api-python-client \
+            google-auth \
+            google-auth-oauthlib \
+            google-auth-httplib2
+
+      - name: Restore YouTube OAuth files
+        shell: bash
+        env:
+          YT_TOKEN_JSON_B64: ${{ secrets.YT_TOKEN_JSON_B64 }}
+          YT_CLIENT_SECRET_B64: ${{ secrets.YT_CLIENT_SECRET_B64 }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, base64, pathlib, json
+
+          def decode_env_to_file(env_name: str, out_path: str):
+              b64 = os.environ.get(env_name, "")
+              if not b64.strip():
+                  raise SystemExit(f"Missing secret: {env_name}")
+              b64 = "".join(b64.split())
+              b64 += "=" * ((-len(b64)) % 4)
+              data = base64.b64decode(b64)
+              p = pathlib.Path(out_path)
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_bytes(data)
+
+          decode_env_to_file("YT_TOKEN_JSON_B64", ".yt_token/token.json")
+          decode_env_to_file("YT_CLIENT_SECRET_B64", "client_secret.json")
+
+          json.load(open(".yt_token/token.json", "r", encoding="utf-8"))
+          json.load(open("client_secret.json", "r", encoding="utf-8"))
+          print("[OK] Restored token.json and client_secret.json")
+          PY
+
+      - name: Prepare bgms directory from Releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p bgms
+
+          # repo に bgms.zip が無ければ release から落とす
+          if [ ! -f "bgms.zip" ]; then
+            echo "[INFO] bgms.zip not found in repo. Downloading from latest release..."
+            gh release download --repo "$GITHUB_REPOSITORY" --pattern "bgms.zip" --dir .
+          fi
+
+          ls -lh bgms.zip
+
+          rm -rf _tmp_bgmzip
+          mkdir -p _tmp_bgmzip
+          unzip -q bgms.zip -d _tmp_bgmzip
+
+          # zip内のどこに入ってても音声だけ bgms/ に集約
+          find _tmp_bgmzip -type f \( -iname '*.mp3' -o -iname '*.wav' -o -iname '*.m4a' -o -iname '*.aac' -o -iname '*.flac' -o -iname '*.ogg' \) -exec cp -n {} bgms/ \; || true
+          rm -rf _tmp_bgmzip
+
+          AUDIO_COUNT="$(find bgms -type f \( -iname '*.mp3' -o -iname '*.wav' -o -iname '*.m4a' -o -iname '*.aac' -o -iname '*.flac' -o -iname '*.ogg' \) | wc -l | tr -d ' ')"
+          echo "[INFO] audio files in ./bgms = ${AUDIO_COUNT}"
+          if [ "${AUDIO_COUNT}" -eq 0 ]; then
+            echo "[ERROR] No audio files found in ./bgms after extracting bgms.zip"
+            exit 1
+          fi
+
+          echo "[INFO] sample bgms:"
+          find bgms -type f | head -n 10 || true
+
+      - name: Ensure images exist (placeholder if empty)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p images
+          IMG_COUNT="$(find images -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \) | wc -l | tr -d ' ')"
+          echo "[INFO] image files in ./images = ${IMG_COUNT}"
+          if [ "${IMG_COUNT}" -eq 0 ]; then
+            echo "[WARN] No images found. Generating placeholder images..."
+            python3 - <<'PY'
+            from PIL import Image, ImageDraw
+            from pathlib import Path
+            out = Path("images"); out.mkdir(parents=True, exist_ok=True)
+            for i in range(1, 6):
+              im = Image.new("RGB", (1920, 1080), (20*i, 30*i, 40*i))
+              d = ImageDraw.Draw(im)
+              d.text((60, 60), f"PLACEHOLDER IMAGE {i}", fill=(255,255,255))
+              im.save(out / f"test_{i}.jpg", quality=90)
+            print("[OK] placeholder images created")
+            PY
+          fi
+
+      - name: Run pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 run_bgm_pipeline.py \
+            --client_secrets ./client_secret.json \
+            --token ./.yt_token/token.json \
+            --privacy public \
+            --out_dir ./output \
+            --bgm_dir ./bgms \
+            --img_dir ./images \
+            --thumb_text --make_video --clock \
+            --thumb_text_fontfile /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
+            --clock_fontfile /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf

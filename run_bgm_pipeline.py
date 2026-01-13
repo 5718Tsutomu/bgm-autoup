@@ -5,7 +5,7 @@ One-shot pipeline:
   1) run generate_bgm_package.py
   2) run upload_youtube.py
 
-Example (recommended; no "--" separator needed):
+Example (recommended: NO extra '--'):
   python3 run_bgm_pipeline.py \
     --client_secrets ./client_secret.json \
     --token ./.yt_token/token.json \
@@ -14,13 +14,16 @@ Example (recommended; no "--" separator needed):
     --bgm_dir ./bgms \
     --img_dir ./images \
     --thumb_text --make_video --clock
+
+Note:
+  - If you mistakenly run with `-- --thumb_text ...`, this script will ignore the first '--'.
 """
 
 import argparse
 import subprocess
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 
 def run_cmd(cmd: List[str]) -> None:
@@ -47,12 +50,10 @@ def main() -> None:
     ap.add_argument("--upload_script", default="./upload_youtube.py",
                     help="path to upload_youtube.py")
 
-    # generator dirs (IMPORTANT for GitHub Actions)
-    ap.add_argument("--bgm_dir", default="./bgms", help="BGM directory for generator")
-    ap.add_argument("--img_dir", default="./images", help="Image directory for generator")
-
-    # shared
+    # generator io
     ap.add_argument("--out_dir", default="./output", help="output directory (same as generate script)")
+    ap.add_argument("--bgm_dir", default=None, help="bgm directory for generator (e.g. ./bgms)")
+    ap.add_argument("--img_dir", default=None, help="image directory for generator (e.g. ./images)")
 
     # upload options (minimum)
     ap.add_argument("--client_secrets", required=True, help="client_secret.json path")
@@ -65,42 +66,41 @@ def main() -> None:
     ap.add_argument("--tags", default=None,
                     help="comma separated tags (optional). If omitted, upload_youtube.py's default is used.")
 
-    # behavior
     ap.add_argument("--skip_generate", action="store_true",
                     help="skip generation step and only upload existing files in out_dir")
     ap.add_argument("--dry_run", action="store_true", help="print commands only")
 
-    # pass-through args to generator (unknown args)
+    # pass-through args to generator (e.g. --thumb_text --make_video --clock ...)
     args, gen_args = ap.parse_known_args()
 
-    # ✅ 過去に混ざった "--" を除去（壊れ防止）
-    gen_args = [a for a in gen_args if a != "--"]
+    # ✅ if user mistakenly included '--' separator, remove it
+    if gen_args and gen_args[0] == "--":
+        gen_args = gen_args[1:]
 
     out_dir = Path(args.out_dir)
     gen_script = Path(args.generate_script)
     up_script = Path(args.upload_script)
 
-    if not gen_script.exists():
-        raise SystemExit(f"[ERROR] generate_script not found: {gen_script}")
-    if not up_script.exists():
-        raise SystemExit(f"[ERROR] upload_script not found: {up_script}")
-
-    # ✅ Actions上で本当に音声/画像があるか、先にチェックして分かりやすく落とす
-    bgm_dir = Path(args.bgm_dir)
-    img_dir = Path(args.img_dir)
-    if not bgm_dir.exists():
-        raise SystemExit(f"[ERROR] bgm_dir does not exist: {bgm_dir}")
-    if not img_dir.exists():
-        raise SystemExit(f"[ERROR] img_dir does not exist: {img_dir}")
+    ensure_exists(gen_script, "generate_script")
+    ensure_exists(up_script, "upload_script")
 
     # 1) generate
     if not args.skip_generate:
-        cmd_gen = [
-            sys.executable, str(gen_script),
-            "--out_dir", str(out_dir),
-            "--bgm_dir", str(bgm_dir),
-            "--img_dir", str(img_dir),
-        ] + gen_args
+        cmd_gen = [sys.executable, str(gen_script), "--out_dir", str(out_dir)]
+
+        # ✅ forward bgm/img dirs only when specified
+        if args.bgm_dir:
+            cmd_gen += ["--bgm_dir", str(args.bgm_dir)]
+            # optional: helpful error
+            if not Path(args.bgm_dir).exists():
+                raise SystemExit(f"[ERROR] bgm_dir does not exist: {args.bgm_dir}")
+
+        if args.img_dir:
+            cmd_gen += ["--img_dir", str(args.img_dir)]
+            if not Path(args.img_dir).exists():
+                raise SystemExit(f"[ERROR] img_dir does not exist: {args.img_dir}")
+
+        cmd_gen += gen_args
 
         if args.dry_run:
             print("[DRY RUN]", " ".join(cmd_gen))
