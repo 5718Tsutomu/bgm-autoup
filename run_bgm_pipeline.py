@@ -17,7 +17,7 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 
 def run_cmd(cmd: List[str]) -> None:
@@ -55,7 +55,6 @@ def main() -> None:
     ap.add_argument("--publish_at", default=None, help="RFC3339. e.g. 2026-01-08T09:00:00+09:00")
     ap.add_argument("--made_for_kids", action="store_true")
 
-    # tags (upload_youtube.py 側の default が 'DEFAULT_TAGS' 文字列になっている場合の保険)
     ap.add_argument("--tags", default=None,
                     help="comma separated tags (optional). If omitted, upload_youtube.py's default is used.")
 
@@ -64,9 +63,12 @@ def main() -> None:
                     help="skip generation step and only upload existing files in out_dir")
     ap.add_argument("--dry_run", action="store_true", help="print commands only")
 
-    # pass-through args to generator after `--`
-    # e.g. -- --thumb_text --make_video --clock
+    # ここがポイント：未知の引数（generator向け）を受け取る
     args, gen_args = ap.parse_known_args()
+
+    # ✅ ユーザーが `-- --thumb_text ...` と書いても壊れないように、先頭の `--` を剥がす
+    while gen_args and gen_args[0] == "--":
+        gen_args = gen_args[1:]
 
     out_dir = Path(args.out_dir)
     gen_script = Path(args.generate_script)
