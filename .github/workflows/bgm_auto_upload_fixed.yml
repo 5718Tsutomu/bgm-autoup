@@ -1,4 +1,4 @@
-name: BGM Auto Upload (fixed)
+name: BGM Auto Upload (Fixed)
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
@@ -20,19 +20,91 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install tools (ffmpeg, unzip, gh, fonts)
+      - name: Restore YouTube OAuth files
         shell: bash
+        env:
+          YT_TOKEN_JSON_B64: ${{ secrets.YT_TOKEN_JSON_B64 }}
+          YT_CLIENT_SECRET_B64: ${{ secrets.YT_CLIENT_SECRET_B64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p .yt_token
+
+          python3 - <<'PY'
+import os, base64, json, pathlib, sys
+
+def decode_env(var: str, out_path: str):
+    b = os.environ.get(var, "")
+    if not b.strip():
+        print(f"[ERROR] secret {var} is empty", file=sys.stderr)
+        sys.exit(1)
+
+    # remove whitespaces/newlines and fix padding
+    b = "".join(b.split())
+    b += "=" * (-len(b) % 4)
+
+    data = base64.b64decode(b)
+    p = pathlib.Path(out_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(data)
+
+    # JSON check
+    json.loads(p.read_text(encoding="utf-8"))
+    print("[OK] wrote", p)
+
+decode_env("YT_TOKEN_JSON_B64", ".yt_token/token.json")
+decode_env("YT_CLIENT_SECRET_B64", "client_secret.json")
+PY
+
+          ls -la .yt_token
+          ls -la client_secret.json
+
+      - name: Download bgms.zip from latest Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y ffmpeg unzip gh fonts-dejavu-core
-          ffmpeg -version
-          gh --version
+          sudo apt-get install -y jq unzip
 
-      - name: Install Python deps
+          mkdir -p _assets
+
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest"
+          rel_json="$(curl -sL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
+
+          asset_url="$(echo "$rel_json" | jq -r '.assets[] | select(.name=="bgms.zip") | .url')"
+          if [ -z "$asset_url" ] || [ "$asset_url" = "null" ]; then
+            echo "[ERROR] bgms.zip not found in latest release assets" >&2
+            echo "[INFO] available assets:" >&2
+            echo "$rel_json" | jq -r '.assets[].name' >&2 || true
+            exit 1
+          fi
+
+          echo "[INFO] Downloading bgms.zip ..."
+          curl -L \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            "$asset_url" \
+            -o _assets/bgms.zip
+
+          ls -lh _assets/bgms.zip
+
+          rm -rf bgms bgms_unpack
+          mkdir -p bgms_unpack
+          unzip -q _assets/bgms.zip -d bgms_unpack
+
+          if [ -d bgms_unpack/bgms ]; then
+            mv bgms_unpack/bgms bgms
+          else
+            mv bgms_unpack bgms
+          fi
+
+          echo "[INFO] audio file count in ./bgms:"
+          find bgms -type f \( -iname "*.mp3" -o -iname "*.wav" -o -iname "*.m4a" -o -iname "*.aac" -o -iname "*.flac" -o -iname "*.ogg" \) | wc -l
+
+      - name: Install dependencies
         shell: bash
         run: |
-          set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install \
             pillow \
@@ -41,93 +113,34 @@ jobs:
             google-auth-oauthlib \
             google-auth-httplib2
 
-      - name: Restore YouTube OAuth files
+      - name: Install ffmpeg
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
+          ffprobe -version
+
+      - name: Sanity check inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "[INFO] image files in ./images = $(find images -type f | wc -l)"
+          echo "[INFO] audio files in ./bgms  = $(find bgms -type f | wc -l)"
+          test -d images
+          test -d bgms
+
+      - name: Run pipeline (generate + upload)
         shell: bash
         env:
-          YT_TOKEN_JSON_B64: ${{ secrets.YT_TOKEN_JSON_B64 }}
-          YT_CLIENT_SECRET_B64: ${{ secrets.YT_CLIENT_SECRET_B64 }}
+          TZ: Asia/Tokyo
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-import os, base64, pathlib, json
 
-def decode_env_to_file(env_name: str, out_path: str):
-    b64 = os.environ.get(env_name, "")
-    if not b64.strip():
-        raise SystemExit(f"Missing secret: {env_name}")
-    b64 = "".join(b64.split())
-    b64 += "=" * ((-len(b64)) % 4)
-    data = base64.b64decode(b64)
-    p = pathlib.Path(out_path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(data)
+          # existing fonts on ubuntu-latest
+          FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+          FONT_BOLD="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-decode_env_to_file("YT_TOKEN_JSON_B64", ".yt_token/token.json")
-decode_env_to_file("YT_CLIENT_SECRET_B64", "client_secret.json")
-
-json.load(open(".yt_token/token.json", "r", encoding="utf-8"))
-json.load(open("client_secret.json", "r", encoding="utf-8"))
-print("[OK] Restored token.json and client_secret.json")
-PY
-
-      - name: Prepare bgms directory from Releases
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p bgms
-
-          if [ ! -f "bgms.zip" ]; then
-            echo "[INFO] bgms.zip not found in repo. Downloading from latest release..."
-            gh release download --repo "$GITHUB_REPOSITORY" --pattern "bgms.zip" --dir .
-          fi
-
-          ls -lh bgms.zip
-
-          rm -rf _tmp_bgmzip
-          mkdir -p _tmp_bgmzip
-          unzip -q bgms.zip -d _tmp_bgmzip
-
-          find _tmp_bgmzip -type f \( -iname '*.mp3' -o -iname '*.wav' -o -iname '*.m4a' -o -iname '*.aac' -o -iname '*.flac' -o -iname '*.ogg' \) -exec cp -n "{}" bgms/ \; || true
-          rm -rf _tmp_bgmzip
-
-          AUDIO_COUNT="$(find bgms -type f \( -iname '*.mp3' -o -iname '*.wav' -o -iname '*.m4a' -o -iname '*.aac' -o -iname '*.flac' -o -iname '*.ogg' \) | wc -l | tr -d ' ')"
-          echo "[INFO] audio files in ./bgms = ${AUDIO_COUNT}"
-          if [ "${AUDIO_COUNT}" -eq 0 ]; then
-            echo "[ERROR] No audio files found in ./bgms after extracting bgms.zip"
-            exit 1
-          fi
-
-      - name: Ensure images exist (placeholder if empty)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p images
-          IMG_COUNT="$(find images -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \) | wc -l | tr -d ' ')"
-          echo "[INFO] image files in ./images = ${IMG_COUNT}"
-
-          if [ "${IMG_COUNT}" -eq 0 ]; then
-            echo "[WARN] No images found. Generating placeholder images..."
-            python3 - <<'PY'
-from PIL import Image, ImageDraw
-from pathlib import Path
-
-out = Path("images")
-out.mkdir(parents=True, exist_ok=True)
-for i in range(1, 6):
-    im = Image.new("RGB", (1920, 1080), (20*i, 30*i, 40*i))
-    d = ImageDraw.Draw(im)
-    d.text((60, 60), f"PLACEHOLDER IMAGE {i}", fill=(255, 255, 255))
-    im.save(out / f"test_{i}.jpg", quality=90)
-print("[OK] placeholder images created")
-PY
-          fi
-
-      - name: Run pipeline
-        shell: bash
-        run: |
-          set -euo pipefail
           python3 run_bgm_pipeline.py \
             --client_secrets ./client_secret.json \
             --token ./.yt_token/token.json \
@@ -135,6 +148,9 @@ PY
             --out_dir ./output \
             --bgm_dir ./bgms \
             --img_dir ./images \
-            --thumb_text --make_video --clock \
-            --thumb_text_fontfile /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
-            --clock_fontfile /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf
+            --thumb_text \
+            --thumb_text_candidates_file ./thumbnail_text_candidates.txt \
+            --thumb_text_fontfile "$FONT_BOLD" \
+            --make_video \
+            --clock \
+            --clock_fontfile "$FONT"
