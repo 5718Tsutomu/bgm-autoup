@@ -82,10 +82,6 @@ pyasn1_modules==0.4.2
 pydantic==2.12.5
 pydantic_core==2.41.5
 pynput==1.7.6
-pyobjc-core==9.1.1
-pyobjc-framework-ApplicationServices==9.1.1
-pyobjc-framework-Cocoa==9.1.1
-pyobjc-framework-Quartz==9.1.1
 pyparsing==3.2.5
 pyquaternion==0.9.9
 pyrsistent==0.19.3
