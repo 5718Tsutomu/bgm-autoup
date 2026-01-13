@@ -1,0 +1,98 @@
+name: BGM Auto Upload
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ✅ Secrets → token.json / client_secret.json を "Pythonで" 復元する（壊れにくい）
+      - name: Restore YouTube OAuth files (Python-safe)
+        shell: bash
+        env:
+          YT_TOKEN_JSON_B64: ${{ secrets.YT_TOKEN_JSON_B64 }}
+          YT_CLIENT_SECRET_B64: ${{ secrets.YT_CLIENT_SECRET_B64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p .yt_token
+
+          python3 - <<'PY'
+          import os, base64, pathlib, sys, json
+
+          def restore(env_name: str, out_path: str):
+              s = os.environ.get(env_name, "")
+              if not s:
+                  print(f"[ERROR] Secret is empty: {env_name}", file=sys.stderr)
+                  sys.exit(1)
+
+              # GitHub Secrets は改行を含まない想定だが、念のため空白改行を除去
+              s_stripped = "".join(s.split())
+
+              try:
+                  data = base64.b64decode(s_stripped.encode("utf-8"), validate=True)
+              except Exception as e:
+                  print(f"[ERROR] base64 decode failed for {env_name}: {e}", file=sys.stderr)
+                  sys.exit(1)
+
+              p = pathlib.Path(out_path)
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_bytes(data)
+
+              # JSONとして読めるかチェック
+              try:
+                  json.loads(p.read_text(encoding="utf-8"))
+              except Exception as e:
+                  print(f"[ERROR] restored file is not valid JSON: {out_path}: {e}", file=sys.stderr)
+                  sys.exit(1)
+
+              print(f"[OK] restored: {out_path} ({p.stat().st_size} bytes)")
+
+          restore("YT_TOKEN_JSON_B64", ".yt_token/token.json")
+          restore("YT_CLIENT_SECRET_B64", "client_secret.json")
+          PY
+
+          echo "[OK] Restored token.json and client_secret.json"
+          ls -la .yt_token
+          ls -la client_secret.json
+
+      # ✅ 必要最小だけ pip install（opencv/numpy 地雷回避）
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            pillow \
+            google-api-python-client \
+            google-auth \
+            google-auth-oauthlib \
+            google-auth-httplib2
+
+      # ✅ ffmpeg（音声ミックス・動画生成）
+      - name: Install ffmpeg
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
+          ffprobe -version
+
+      - name: Run pipeline
+        shell: bash
+        run: |
+          python3 run_bgm_pipeline.py \
+            --client_secrets ./client_secret.json \
+            --token ./.yt_token/token.json \
+            --privacy public \
+            --out_dir ./output \
+            -- --thumb_text --make_video --clock
