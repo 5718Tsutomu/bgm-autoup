@@ -5,12 +5,15 @@ One-shot pipeline:
   1) run generate_bgm_package.py
   2) run upload_youtube.py
 
-Example:
+Example (recommended; no "--" separator needed):
   python3 run_bgm_pipeline.py \
     --client_secrets ./client_secret.json \
+    --token ./.yt_token/token.json \
     --privacy public \
     --out_dir ./output \
-    -- --thumb_text --make_video --clock
+    --bgm_dir ./bgms \
+    --img_dir ./images \
+    --thumb_text --make_video --clock
 """
 
 import argparse
@@ -44,6 +47,10 @@ def main() -> None:
     ap.add_argument("--upload_script", default="./upload_youtube.py",
                     help="path to upload_youtube.py")
 
+    # generator dirs (IMPORTANT for GitHub Actions)
+    ap.add_argument("--bgm_dir", default="./bgms", help="BGM directory for generator")
+    ap.add_argument("--img_dir", default="./images", help="Image directory for generator")
+
     # shared
     ap.add_argument("--out_dir", default="./output", help="output directory (same as generate script)")
 
@@ -63,12 +70,11 @@ def main() -> None:
                     help="skip generation step and only upload existing files in out_dir")
     ap.add_argument("--dry_run", action="store_true", help="print commands only")
 
-    # ここがポイント：未知の引数（generator向け）を受け取る
+    # pass-through args to generator (unknown args)
     args, gen_args = ap.parse_known_args()
 
-    # ✅ ユーザーが `-- --thumb_text ...` と書いても壊れないように、先頭の `--` を剥がす
-    while gen_args and gen_args[0] == "--":
-        gen_args = gen_args[1:]
+    # ✅ 過去に混ざった "--" を除去（壊れ防止）
+    gen_args = [a for a in gen_args if a != "--"]
 
     out_dir = Path(args.out_dir)
     gen_script = Path(args.generate_script)
@@ -79,9 +85,23 @@ def main() -> None:
     if not up_script.exists():
         raise SystemExit(f"[ERROR] upload_script not found: {up_script}")
 
+    # ✅ Actions上で本当に音声/画像があるか、先にチェックして分かりやすく落とす
+    bgm_dir = Path(args.bgm_dir)
+    img_dir = Path(args.img_dir)
+    if not bgm_dir.exists():
+        raise SystemExit(f"[ERROR] bgm_dir does not exist: {bgm_dir}")
+    if not img_dir.exists():
+        raise SystemExit(f"[ERROR] img_dir does not exist: {img_dir}")
+
     # 1) generate
     if not args.skip_generate:
-        cmd_gen = [sys.executable, str(gen_script), "--out_dir", str(out_dir)] + gen_args
+        cmd_gen = [
+            sys.executable, str(gen_script),
+            "--out_dir", str(out_dir),
+            "--bgm_dir", str(bgm_dir),
+            "--img_dir", str(img_dir),
+        ] + gen_args
+
         if args.dry_run:
             print("[DRY RUN]", " ".join(cmd_gen))
         else:
