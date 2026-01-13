@@ -1,0 +1,82 @@
+name: BGM Auto Upload
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ✅ Secrets → token.json / client_secret.json を復元する
+      - name: Restore YouTube OAuth files
+        shell: bash
+        env:
+          YT_TOKEN_JSON_B64: ${{ secrets.YT_TOKEN_JSON_B64 }}
+          YT_CLIENT_SECRET_B64: ${{ secrets.YT_CLIENT_SECRET_B64 }}
+        run: |
+          set -euo pipefail
+
+          # まず保存先フォルダを作る
+          mkdir -p .yt_token
+
+          # ubuntu の base64 は --decode が使える（macと違う）
+          b64_decode () {
+            if base64 --help 2>&1 | grep -q -- '--decode'; then
+              base64 --decode
+            else
+              base64 -d
+            fi
+          }
+
+          # ✅ echo は改行や解釈で壊れやすいので printf を使う（重要）
+          printf '%s' "$YT_TOKEN_JSON_B64" | b64_decode > .yt_token/token.json
+          printf '%s' "$YT_CLIENT_SECRET_B64" | b64_decode > client_secret.json
+
+          # JSONとして正しいかチェック（壊れてたらここで止まる）
+          python3 -m json.tool .yt_token/token.json >/dev/null
+          python3 -m json.tool client_secret.json >/dev/null
+
+          echo "[OK] Restored token.json and client_secret.json"
+          ls -la .yt_token
+          ls -la client_secret.json
+
+      # ✅ 必要最小だけ pip install（opencv/numpy の地雷を踏まない）
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            pillow \
+            google-api-python-client \
+            google-auth \
+            google-auth-oauthlib \
+            google-auth-httplib2
+
+      # ✅ ffmpeg が必要（音声ミックス・動画生成）
+      - name: Install ffmpeg
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
+          ffprobe -version
+
+      - name: Run pipeline
+        shell: bash
+        run: |
+          python3 run_bgm_pipeline.py \
+            --client_secrets ./client_secret.json \
+            --token ./.yt_token/token.json \
+            --privacy public \
+            --out_dir ./output \
+            -- --thumb_text --make_video --clock
