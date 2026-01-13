@@ -1,0 +1,17 @@
+# secrets / tokens
+.yt_token/
+client_secret.json
+*.json
+
+# generated outputs
+output/
+**/_work/
+
+# media assets (too large / not for repo)
+bgms/
+# images/  ← 画像もGitHubに置きたくないなら有効化（必要ならコメント外す）
+# images/
+
+# python cache
+__pycache__/
+*.pyc
