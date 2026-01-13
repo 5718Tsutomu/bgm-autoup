@@ -15,3 +15,4 @@ bgms/
 # python cache
 __pycache__/
 *.pyc
+bgms.zip
