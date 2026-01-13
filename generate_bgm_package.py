@@ -366,25 +366,45 @@ def make_mix_from_random_tracks(
     ffmpeg_bin: str = "ffmpeg",
     ffprobe_bin: str = "ffprobe",
 ) -> Tuple[Path, Path, Path, float]:
+    """
+    Randomly pick N tracks and concatenate with acrossfade.
+
+    Disk-friendly implementation:
+      - keeps ONLY one intermediate wav (mix_current.wav) in _work
+      - avoids creating mix_000.wav, mix_001.wav, ... which can fill the runner disk
+    """
+    import os
+
+    in_dir = Path(in_dir)
+    out_dir = Path(out_dir)
+
+    if not in_dir.exists():
+        raise SystemExit(f"bgm_dir does not exist: {in_dir}")
+
     files = list_audio_files(in_dir)
     if not files:
         raise SystemExit("入力フォルダに音声ファイルが見つかりません")
 
     if seed is None:
         seed = int(datetime.now().strftime("%Y%m%d"))
-    random.seed(seed)
+    rng = random.Random(seed)
 
+    # pick
     if len(files) >= n:
-        picked = random.sample(files, n)
+        picked = rng.sample(files, n)
     else:
-        picked = [random.choice(files) for _ in range(n)]
-    random.shuffle(picked)
+        picked = [rng.choice(files) for _ in range(n)]
+    rng.shuffle(picked)
 
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # work dir (temporary)
     work = out_dir / "_work"
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True, exist_ok=True)
 
+    # durations for timestamps
     durations: List[float] = []
     for p in picked:
         try:
@@ -395,30 +415,37 @@ def make_mix_from_random_tracks(
 
     starts: List[float] = [0.0]
     for i in range(1, len(picked)):
-        nxt = picked[i]
-        tmp = work / "mix_tmp.wav"
-        if tmp.exists():
-            tmp.unlink()
+        prev = durations[i - 1]
+        starts.append(starts[-1] + max(0.0, prev - xfade))
 
+    # ---- make intermediate wav (only 1 file is kept) ----
+    current = work / "mix_current.wav"
+
+    # first track -> current wav
+    run([ffmpeg_bin, "-y", "-i", str(picked[0]), "-vn", "-ar", "48000", "-ac", "2", str(current)])
+
+    # chain acrossfade into the same "current" file
+    for i in range(1, len(picked)):
+        nxt = picked[i]
+        next_wav = work / "mix_next.wav"
         run([
             ffmpeg_bin, "-y",
             "-i", str(current),
             "-i", str(nxt),
             "-filter_complex",
             (
-                "[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a0];"            "[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a1];"            "[a0][a1]acrossfade=d={}:c1=tri:c2=tri[a]".format(xfade)
+                "[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a0];"
+                "[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a1];"
+                f"[a0][a1]acrossfade=d={xfade}:c1=tri:c2=tri[a]"
             ),
             "-map", "[a]",
-            str(tmp)
+            str(next_wav)
         ])
 
-        # IMPORTANT: keep only 1 intermediate WAV (GitHub Actions disk is small)
-        try:
-            current.unlink()
-        except Exception:
-            pass
-        tmp.replace(current)
+        # replace current with next (delete old current implicitly)
+        os.replace(str(next_wav), str(current))
 
+    # final output
     out_audio = out_dir / "mix.wav"
     if loudnorm:
         run([
@@ -430,17 +457,23 @@ def make_mix_from_random_tracks(
     else:
         run([ffmpeg_bin, "-y", "-i", str(current), "-ar", "48000", "-ac", "2", str(out_audio)])
 
+    # timestamps
     ts_path = out_dir / "timestamps.txt"
     with ts_path.open("w", encoding="utf-8") as f:
         for i, p in enumerate(picked):
-            f.write("{} {}\n".format(sec_to_hms(starts[i]), p.stem))
+            f.write(f"{sec_to_hms(starts[i])} {p.stem}\n")
 
+    # used files
     used_path = out_dir / "used_files.txt"
     with used_path.open("w", encoding="utf-8") as f:
         for p in picked:
             f.write(str(p) + "\n")
 
     mixed_dur = ffprobe_duration_sec(out_audio, ffprobe_bin=ffprobe_bin)
+
+    # cleanup temp work to save disk
+    shutil.rmtree(work, ignore_errors=True)
+
     return out_audio, ts_path, used_path, mixed_dur
 
 
