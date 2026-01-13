@@ -1,15 +1,12 @@
-name: BGM Auto Upload (Fixed)
+name: BGM Auto Upload (fixed)
 
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
@@ -20,6 +17,7 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Secrets から token/client_secret を復元（padding/改行崩れに強い）
       - name: Restore YouTube OAuth files
         shell: bash
         env:
@@ -27,80 +25,40 @@ jobs:
           YT_CLIENT_SECRET_B64: ${{ secrets.YT_CLIENT_SECRET_B64 }}
         run: |
           set -euo pipefail
-          mkdir -p .yt_token
-
           python3 - <<'PY'
-import os, base64, json, pathlib, sys
+          import os, base64, json, pathlib, sys
 
-def decode_env(var: str, out_path: str):
-    b = os.environ.get(var, "")
-    if not b.strip():
-        print(f"[ERROR] secret {var} is empty", file=sys.stderr)
-        sys.exit(1)
+          def decode_env_to_file(env_name: str, out_path: str):
+              b64 = os.environ.get(env_name, "")
+              if not b64.strip():
+                  print(f"[ERROR] Missing secret: {env_name}", file=sys.stderr)
+                  sys.exit(1)
 
-    # remove whitespaces/newlines and fix padding
-    b = "".join(b.split())
-    b += "=" * (-len(b) % 4)
+              # remove whitespace/newlines
+              b64 = "".join(b64.split())
+              # add padding if needed
+              b64 += "=" * ((-len(b64)) % 4)
 
-    data = base64.b64decode(b)
-    p = pathlib.Path(out_path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(data)
+              try:
+                  data = base64.b64decode(b64, validate=False)
+              except Exception as e:
+                  print(f"[ERROR] base64 decode failed for {env_name}: {e}", file=sys.stderr)
+                  sys.exit(1)
 
-    # JSON check
-    json.loads(p.read_text(encoding="utf-8"))
-    print("[OK] wrote", p)
+              p = pathlib.Path(out_path)
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_bytes(data)
 
-decode_env("YT_TOKEN_JSON_B64", ".yt_token/token.json")
-decode_env("YT_CLIENT_SECRET_B64", "client_secret.json")
-PY
+              # JSON validation
+              json.loads(p.read_text(encoding="utf-8"))
+              print("[OK] wrote", p)
+
+          decode_env_to_file("YT_TOKEN_JSON_B64", ".yt_token/token.json")
+          decode_env_to_file("YT_CLIENT_SECRET_B64", "client_secret.json")
+          PY
 
           ls -la .yt_token
           ls -la client_secret.json
-
-      - name: Download bgms.zip from latest Release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y jq unzip
-
-          mkdir -p _assets
-
-          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest"
-          rel_json="$(curl -sL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
-
-          asset_url="$(echo "$rel_json" | jq -r '.assets[] | select(.name=="bgms.zip") | .url')"
-          if [ -z "$asset_url" ] || [ "$asset_url" = "null" ]; then
-            echo "[ERROR] bgms.zip not found in latest release assets" >&2
-            echo "[INFO] available assets:" >&2
-            echo "$rel_json" | jq -r '.assets[].name' >&2 || true
-            exit 1
-          fi
-
-          echo "[INFO] Downloading bgms.zip ..."
-          curl -L \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/octet-stream" \
-            "$asset_url" \
-            -o _assets/bgms.zip
-
-          ls -lh _assets/bgms.zip
-
-          rm -rf bgms bgms_unpack
-          mkdir -p bgms_unpack
-          unzip -q _assets/bgms.zip -d bgms_unpack
-
-          if [ -d bgms_unpack/bgms ]; then
-            mv bgms_unpack/bgms bgms
-          else
-            mv bgms_unpack bgms
-          fi
-
-          echo "[INFO] audio file count in ./bgms:"
-          find bgms -type f \( -iname "*.mp3" -o -iname "*.wav" -o -iname "*.m4a" -o -iname "*.aac" -o -iname "*.flac" -o -iname "*.ogg" \) | wc -l
 
       - name: Install dependencies
         shell: bash
@@ -113,22 +71,60 @@ PY
             google-auth-oauthlib \
             google-auth-httplib2
 
-      - name: Install ffmpeg
+      - name: Install ffmpeg + unzip
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg unzip
           ffmpeg -version
-          ffprobe -version
+          unzip -v | head -n 2
+
+      # Releases に置いた bgms.zip を落として展開して ./bgms を作る
+      - name: Download bgms.zip from latest Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # gh は ubuntu-latest に基本入ってます
+          gh --version
+
+          rm -f bgms.zip
+          rm -rf bgms _bgms_unzip
+
+          gh release download --pattern "bgms.zip" --clobber --repo "$GITHUB_REPOSITORY"
+
+          test -f bgms.zip
+          mkdir -p _bgms_unzip
+          unzip -q bgms.zip -d _bgms_unzip
+
+          # zipの中が bgms/ で入ってる場合と、直下にファイルが入ってる場合の両対応
+          if [ -d "_bgms_unzip/bgms" ]; then
+            mv "_bgms_unzip/bgms" "./bgms"
+          else
+            mkdir -p bgms
+            mv _bgms_unzip/* bgms/ || true
+          fi
+
+          echo "[INFO] bgms dir:"
+          ls -la bgms | head -n 50
 
       - name: Sanity check inputs
         shell: bash
         run: |
           set -euo pipefail
-          echo "[INFO] image files in ./images = $(find images -type f | wc -l)"
-          echo "[INFO] audio files in ./bgms  = $(find bgms -type f | wc -l)"
+
+          IMG_COUNT="$(find images -type f 2>/dev/null | wc -l | tr -d ' ')"
+          AUDIO_COUNT="$(find bgms -type f \( -iname "*.mp3" -o -iname "*.wav" -o -iname "*.m4a" -o -iname "*.aac" -o -iname "*.flac" -o -iname "*.ogg" \) 2>/dev/null | wc -l | tr -d ' ')"
+
+          echo "[INFO] image files in ./images = ${IMG_COUNT}"
+          echo "[INFO] audio files in ./bgms  = ${AUDIO_COUNT}"
+
           test -d images
           test -d bgms
+          test "${IMG_COUNT}" -gt 0
+          test "${AUDIO_COUNT}" -gt 0
 
       - name: Run pipeline (generate + upload)
         shell: bash
@@ -137,7 +133,6 @@ PY
         run: |
           set -euo pipefail
 
-          # existing fonts on ubuntu-latest
           FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
           FONT_BOLD="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
