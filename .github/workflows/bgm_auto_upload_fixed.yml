@@ -2,72 +2,33 @@ name: BGM Auto Upload (fixed)
 
 on:
   workflow_dispatch:
+    inputs:
+      upload:
+        description: "Upload to YouTube? (true/false). Scheduled runs always upload."
+        required: true
+        default: "false"
   schedule:
-    # JST 10:00 = UTC 01:00
+    # 10:00 JST = 01:00 UTC
     - cron: "0 1 * * *"
 
-concurrency:
-  group: bgm-auto-upload
-  cancel-in-progress: false
+permissions:
+  contents: read
 
 jobs:
-  run:
+  bgm:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    env:
+      TZ: Asia/Tokyo
+      DO_UPLOAD: ${{ github.event_name == 'schedule' || inputs.upload == 'true' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Optional: free disk space (helps avoid "No space left on device")
-      - name: Free disk space (optional)
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
-          df -h
-
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Restore YouTube OAuth files
-        shell: bash
-        env:
-          YT_TOKEN_JSON_B64: ${{ secrets.YT_TOKEN_JSON_B64 }}
-          YT_CLIENT_SECRET_B64: ${{ secrets.YT_CLIENT_SECRET_B64 }}
-        run: |
-          set -euo pipefail
-
-          python3 - <<'PY'
-          import os, base64, json, pathlib, sys
-
-          def decode_env(env: str, out_path: str):
-              b64 = os.environ.get(env, "")
-              if not b64.strip():
-                  print(f"[ERROR] secret {env} is empty", file=sys.stderr)
-                  sys.exit(1)
-
-              # remove whitespace/newlines + fix padding
-              b64 = "".join(b64.split())
-              b64 += "=" * (-len(b64) % 4)
-
-              data = base64.b64decode(b64)
-              p = pathlib.Path(out_path)
-              p.parent.mkdir(parents=True, exist_ok=True)
-              p.write_bytes(data)
-
-              # JSON validity check
-              json.loads(p.read_text(encoding="utf-8"))
-              print("[OK] wrote", p)
-
-          decode_env("YT_TOKEN_JSON_B64", ".yt_token/token.json")
-          decode_env("YT_CLIENT_SECRET_B64", "client_secret.json")
-          PY
-
-          ls -la .yt_token
-          ls -la client_secret.json
 
       - name: Install dependencies
         shell: bash
@@ -88,69 +49,90 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg unzip
           ffmpeg -version
-          ffprobe -version
 
-      - name: Download & extract bgms.zip from latest Release
+      - name: Restore YouTube OAuth files from Secrets
+        shell: bash
+        env:
+          YT_TOKEN_JSON_B64: ${{ secrets.YT_TOKEN_JSON_B64 }}
+          YT_CLIENT_SECRET_B64: ${{ secrets.YT_CLIENT_SECRET_B64 }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, base64, json, pathlib
+
+          def decode_env_to_file(env_name: str, out_path: str):
+              b64 = os.environ.get(env_name, "")
+              if not b64.strip():
+                  raise SystemExit(f"Missing secret: {env_name}")
+              b64 = "".join(b64.split())
+              b64 += "=" * ((-len(b64)) % 4)
+              data = base64.b64decode(b64)
+              p = pathlib.Path(out_path)
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_bytes(data)
+              json.loads(p.read_text(encoding="utf-8"))
+              print("[OK] wrote", p)
+
+          decode_env_to_file("YT_TOKEN_JSON_B64", ".yt_token/token.json")
+          decode_env_to_file("YT_CLIENT_SECRET_B64", "client_secret.json")
+          PY
+
+      - name: Download bgms.zip from latest Release and extract
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          rm -rf bgms _bgms_zip bgms.zip
 
-          rm -rf bgms bgms.zip .tmp_bgms
+          gh version
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern "bgms.zip" --dir .
 
-          # download bgms.zip from latest Release
-          gh release download --repo "$GITHUB_REPOSITORY" --pattern "bgms.zip" --clobber
-          ls -lh bgms.zip
+          mkdir -p _bgms_zip
+          unzip -q bgms.zip -d _bgms_zip
 
-          mkdir -p .tmp_bgms
-          unzip -q bgms.zip -d .tmp_bgms
-
-          # handle both: zip contains "bgms/" or directly audio files
-          if [ -d .tmp_bgms/bgms ]; then
-            mv .tmp_bgms/bgms bgms
+          if [ -d "_bgms_zip/bgms" ]; then
+            mv _bgms_zip/bgms bgms
+            rm -rf _bgms_zip
           else
-            mkdir -p bgms
-            shopt -s dotglob
-            mv .tmp_bgms/* bgms/
+            mv _bgms_zip bgms
           fi
 
-          rm -rf .tmp_bgms bgms.zip
+          rm -f bgms.zip
 
-          AUDIO_COUNT=$(find bgms -type f \( -iname '*.mp3' -o -iname '*.wav' -o -iname '*.m4a' -o -iname '*.aac' -o -iname '*.flac' -o -iname '*.ogg' \) | wc -l)
-          echo "[INFO] audio files in ./bgms = ${AUDIO_COUNT}"
-          test "${AUDIO_COUNT}" -gt 0
+          test -d bgms
+          echo "[INFO] audio files in ./bgms = $(find bgms -type f \( -iname '*.mp3' -o -iname '*.wav' -o -iname '*.m4a' -o -iname '*.aac' -o -iname '*.flac' -o -iname '*.ogg' \) | wc -l)"
+          du -sh bgms || true
 
-      - name: Sanity check images
+      - name: Sanity check inputs
         shell: bash
         run: |
           set -euo pipefail
-          IMG_COUNT=$(find images -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) | wc -l)
-          echo "[INFO] image files in ./images = ${IMG_COUNT}"
-          test "${IMG_COUNT}" -gt 0
+          test -d images
+          test -d bgms
+          echo "[INFO] image files in ./images = $(find images -type f | wc -l)"
 
-      - name: Run pipeline (generate + upload)
+      - name: Compute SEED (different every run)
         shell: bash
-        env:
-          TZ: Asia/Tokyo
         run: |
           set -euo pipefail
+          SEED=$(( $(date +%s) + ${GITHUB_RUN_ID} + ${GITHUB_RUN_ATTEMPT} ))
+          echo "SEED=$SEED" >> "$GITHUB_ENV"
+          echo "[INFO] SEED=$SEED"
 
-          # unique seed per run (prevents same-day rerun from generating same video)
-          SEED="${GITHUB_RUN_ID}"
-          echo "[INFO] SEED=${SEED}"
+      - name: Generate package (audio + thumbnail + video)
+        shell: bash
+        run: |
+          set -euo pipefail
 
           FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
           FONT_BOLD="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-          python3 run_bgm_pipeline.py \
-            --client_secrets ./client_secret.json \
-            --token ./.yt_token/token.json \
-            --privacy public \
+          python3 generate_bgm_package.py \
             --out_dir ./output \
-            --seed "${SEED}" \
             --bgm_dir ./bgms \
             --img_dir ./images \
+            --seed "$SEED" \
             --thumb_text \
             --thumb_text_candidates_file ./thumbnail_text_candidates.txt \
             --thumb_text_fontfile "$FONT_BOLD" \
@@ -158,10 +140,19 @@ jobs:
             --clock \
             --clock_fontfile "$FONT"
 
-      - name: Cleanup (optional)
-        if: always()
+          rm -rf ./output/_work || true
+
+      - name: Upload to YouTube (scheduled runs only by default)
+        if: env.DO_UPLOAD == 'true'
         shell: bash
         run: |
-          rm -rf output/_work || true
-          rm -rf bgms || true
-          df -h || true
+          set -euo pipefail
+          python3 upload_youtube.py \
+            --client_secrets ./client_secret.json \
+            --token ./.yt_token/token.json \
+            --video ./output/video.mp4 \
+            --thumb ./output/thumbnail.jpg \
+            --title_file ./output/title.txt \
+            --description_file ./output/description.txt \
+            --privacy public \
+            --category_id 10
